@@ -9,7 +9,7 @@ import tensorflow as tf
 from tensorflow.keras import layers
 
 from keras import backend as K
-from keras import callbacks
+#from keras import callbacks
 
 from keras.preprocessing.image import load_img
 from keras.preprocessing.image import img_to_array
@@ -19,28 +19,29 @@ import pandas as pd
 from sklearn.metrics import confusion_matrix, accuracy_score 
 from sklearn.metrics import classification_report, ConfusionMatrixDisplay
 from keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.utils import to_categorical 
 
 from io import StringIO
-from tqdm import tqdm
+#from tqdm import tqdm
 
 
-learning_rate = 0.00025
-decay_rate = 0.2 # 10%
+
+decay_rate = 0.1 # 10%
 
 # Logarithmic decay function for learning rate
-def exp_decay(epoch: int) -> float:
+def exp_decay(epoch: int, learning_rate: float) -> float:
     lrate = learning_rate * np.exp(-decay_rate*epoch)
     return lrate
 
 def compile_model(num_classes: int=7, img_size: tuple=(224,224)) -> Sequential:
     
-    dropout_rate = 0.4
+    #dropout_rate = 0.3
     regularization = 0.01 # L1
-    
+    learning_rate = 0.00025
     epsilon = 1e-06
     
     activation = activations.relu
-    weight_init = tf.keras.initializers.HeNormal()
+    #weight_init = tf.keras.initializers.HeNormal()
     
     padding = "valid"
     # Rescaling is Standartization of the data, this layer will be used with colors 
@@ -53,23 +54,23 @@ def compile_model(num_classes: int=7, img_size: tuple=(224,224)) -> Sequential:
         layers.Rescaling(1./255, input_shape=img_size+(3,)),
          
         layers.Conv2D(16, (3,3), padding=padding, activation=activation,
-                      kernel_regularizer=keras.regularizers.l1(regularization),
-                     kernel_initializer=weight_init),
+                      kernel_regularizer=keras.regularizers.l1(regularization)),
+                     #kernel_initializer=weight_init),
         layers.MaxPooling2D(),
         
         layers.Conv2D(32, (3,3), padding=padding, activation=activation,
-                      kernel_regularizer=keras.regularizers.l1(regularization),
-                     kernel_initializer=weight_init),
+                      kernel_regularizer=keras.regularizers.l1(regularization)),
+                     #kernel_initializer=weight_init),
         layers.MaxPooling2D(),
         
         #layers.Dropout(dropout_rate),
         
         layers.Conv2D(64, (3,3), padding=padding, activation=activation,
-                      kernel_regularizer=keras.regularizers.l1(regularization),
-                     kernel_initializer=weight_init),
+                      kernel_regularizer=keras.regularizers.l1(regularization)),
+                     #kernel_initializer=weight_init),
         layers.MaxPooling2D(),
         
-        layers.Dropout(dropout_rate),
+        #layers.Dropout(dropout_rate),
         #layers.BatchNormalization(), # momentum=0.8 
         
         layers.Flatten(),
@@ -79,8 +80,8 @@ def compile_model(num_classes: int=7, img_size: tuple=(224,224)) -> Sequential:
         #layers.Dropout(rate=dropout_rate),
         #layers.BatchNormalization(),
 
-        layers.Dense(512, activation="relu", kernel_initializer=weight_init),
-        layers.Dropout(rate=dropout_rate),
+        layers.Dense(512, activation="relu"), #, kernel_initializer=weight_init),
+        #layers.Dropout(rate=dropout_rate),
         layers.Dense(num_classes, activation="softmax") # default linear activation
     ])
     
@@ -88,10 +89,15 @@ def compile_model(num_classes: int=7, img_size: tuple=(224,224)) -> Sequential:
     # Adagrad - Adaptive Gradient
     optimizer = keras.optimizers.Adam(learning_rate=learning_rate, epsilon=epsilon)     
     
+    #import functools 
+
+    #top3acc = functools.partial(keras.metrics.top_k_categorical_accuracy, k=3)
+    #top3acc.__name__ = "top3acc"
+    
     # CategoricalCrossentropy is used because labels are OneHotEncoder format
     model.compile(optimizer=optimizer,
                   loss="categorical_crossentropy",
-                  metrics=["accuracy"])
+                  metrics=["accuracy"]) #, "top_k_categorical_accuracy", top3acc])
     return model
 
 ## Mish Activation Function
@@ -221,19 +227,24 @@ def print_filters(model: Sequential, plot_weights: bool=False,
             plt.show();
             
 def print_confusion_matrix(model: Sequential, val_image_path: str, 
-                           normalize: bool=False) -> pd.DataFrame:
-    global IMG_SIZE
+                           normalize: bool=False, img_size: tuple=(224,224),
+                           supress_print: bool=False,
+                           data: Dataset=None
+                           ) -> pd.DataFrame:
 
     # Get validation images
     batch_size = 64
-
-    generator = ImageDataGenerator()
-    image_ds_validation = generator.flow_from_directory(
-            directory=val_image_path,
-            target_size=IMG_SIZE,
-            batch_size=batch_size,
-            shuffle=False # maintains the order to match labels with predictions
-    )
+    
+    if data is None:
+        generator = ImageDataGenerator()
+        image_ds_validation = generator.flow_from_directory(
+                directory=val_image_path,
+                target_size=img_size,
+                batch_size=batch_size,
+                shuffle=False # maintains the order to match labels with predictions
+        )
+    else:
+        image_ds_validation = data
 
     class_names = image_ds_validation.class_indices
 
@@ -247,10 +258,12 @@ def print_confusion_matrix(model: Sequential, val_image_path: str,
 
     # Display Confusion Matrix (normalized and not)
     cm = confusion_matrix(y, y_pred_int, normalize=("true" if normalize else None) )
-    ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names).plot();
+    
+    if not supress_print:
+        ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names).plot();
 
-    # Here Recall is Sensitivity
-    print("Accuracy Score : ", round(accuracy_score(y, y_pred_int),4))
+        # Here Recall is Sensitivity
+        print("Accuracy Score : ", round(accuracy_score(y, y_pred_int),4))
     # Replaced by DataFrame with added Specificity
     #print("Classification Report :\n", classification_report(y, y_pred_int))
 
@@ -290,7 +303,26 @@ def print_confusion_matrix(model: Sequential, val_image_path: str,
 
     return df
 
+def get_top_k_accuracy(Y_real: np.ndarray,
+                       Y_predicted: np.ndarray,
+                       k: int=3) -> float:
+    metrics = tf.keras.metrics.top_k_categorical_accuracy(
+        Y_real, Y_predicted, k=k)
+    _, counts = np.unique(metrics, return_counts=True)
+    return round(counts[1] / len(Y_real), 4)
 
+
+    
+def print_top_k_accuracy(keras_model: Sequential, 
+                         data: keras.preprocessing.image.DirectoryIterator,
+                         k: int=5) -> None:
+    # OneHotEncoder convertion 
+    y_real = to_categorical(data.labels)
+    y_pred = keras_model.predict(data)
+
+    for i in range(1,k+1):
+        print("Top {0} accuracy : {1}".format(
+                i, get_top_k_accuracy(y_real, y_pred, i) ))
 
 
         
